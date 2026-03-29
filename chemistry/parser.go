@@ -131,26 +131,47 @@ func extractCharge(formula string) (string, int) {
 }
 
 // isLikelySimpleIon checks if a formula is likely to be a simple ion.
+// Uses periodic table data and common polyatomic ions to make this determination.
 func isLikelySimpleIon(formula string) bool {
-	// Common simple cations
-	cations := map[string]bool{
-		"Na": true, "K": true, "Li": true, "Ca": true, "Mg": true,
-		"Ba": true, "Sr": true, "Al": true, "Zn": true, "Fe": true,
-		"Cu": true, "Ag": true, "Pb": true, "Sn": true, "Ni": true,
-		"Co": true, "Mn": true, "Cr": true, "Hg": true, "NH4": true,
-		"H": true,
-	}
-	// Common simple anions
-	anions := map[string]bool{
-		"Cl": true, "Br": true, "I": true, "F": true, "O": true,
-		"S": true, "OH": true, "CN": true, "NO3": true, "NO2": true,
-		"SO4": true, "SO3": true, "CO3": true, "PO4": true, "ClO3": true,
-		"ClO4": true, "MnO4": true, "CrO4": true, "Cr2O7": true,
-		"HCO3": true, "HSO4": true, "H2PO4": true, "HPO4": true,
+	// Check if it's a single element that can form ions (has non-zero oxidation states)
+	if el := GetElement(formula); el != nil {
+		// Elements with positive oxidation states can form cations
+		// Elements with negative oxidation states can form anions
+		for _, ox := range el.OxidationStates {
+			if ox != 0 {
+				return true
+			}
+		}
+		return false
 	}
 
-	_, isCation := cations[formula]
-	_, isAnion := anions[formula]
+	// Common polyatomic ions (these are hardcoded as they're molecular, not single elements)
+	polyatomicCations := map[string]bool{
+		"NH4": true, // ammonium
+	}
+
+	polyatomicAnions := map[string]bool{
+		"OH":    true, // hydroxide
+		"CN":    true, // cyanide
+		"NO3":   true, // nitrate
+		"NO2":   true, // nitrite
+		"SO4":   true, // sulfate
+		"SO3":   true, // sulfite
+		"CO3":   true, // carbonate
+		"PO4":   true, // phosphate
+		"ClO3":  true, // chlorate
+		"ClO4":  true, // perchlorate
+		"MnO4":  true, // permanganate
+		"CrO4":  true, // chromate
+		"Cr2O7": true, // dichromate
+		"HCO3":  true, // bicarbonate
+		"HSO4":  true, // bisulfate
+		"H2PO4": true, // dihydrogen phosphate
+		"HPO4":  true, // hydrogen phosphate
+	}
+
+	_, isCation := polyatomicCations[formula]
+	_, isAnion := polyatomicAnions[formula]
 	return isCation || isAnion
 }
 

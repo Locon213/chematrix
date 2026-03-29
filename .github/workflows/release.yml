@@ -1,0 +1,244 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  GO_VERSION: '1.26'
+  APP_NAME: chematrix
+
+jobs:
+  # ============================================
+  # Test Job - Runs on all pushes and PRs
+  # ============================================
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./... -v -race -coverprofile=coverage.out
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-chematrix
+        if: github.event_name == 'push'
+
+  # ============================================
+  # Build Job - Builds binaries for all platforms
+  # ============================================
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # Auto-generate version from date and commit
+            VERSION="v$(date +%Y%m%d).$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Built version: $VERSION"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build for multiple platforms
+        run: |
+          mkdir -p dist
+          
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-linux-amd64 ./cmd/chematrix
+          
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-linux-arm64 ./cmd/chematrix
+          
+          # macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-darwin-amd64 ./cmd/chematrix
+          
+          # macOS ARM64
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-darwin-arm64 ./cmd/chematrix
+          
+          # Windows AMD64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows-amd64.exe ./cmd/chematrix
+          
+          # Windows ARM64
+          GOOS=windows GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}-windows-arm64.exe ./cmd/chematrix
+          
+          # Create checksums
+          cd dist
+          sha256sum * > checksums.txt
+          cd ..
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 30
+
+  # ============================================
+  # Go Report Card - Code quality analysis
+  # ============================================
+  goreportcard:
+    name: Go Report Card
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install goreportcard-cli
+        run: go install github.com/gojp/goreportcard/cmd/goreportcard-cli@latest
+
+      - name: Run Go Report Card
+        run: |
+          goreportcard-cli -v | tee goreport.txt
+        continue-on-error: true
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: goreportcard
+          path: goreport.txt
+          retention-days: 7
+
+  # ============================================
+  # Release Job - Creates GitHub Release
+  # ============================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ needs.build.outputs.version }}
+          path: dist/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          echo "## What's Changed" > changelog.md
+          echo "" >> changelog.md
+          
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Manual release: ${{ needs.build.outputs.version }}" >> changelog.md
+            echo "" >> changelog.md
+          fi
+          
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            echo "### Changes since $LAST_TAG" >> changelog.md
+            echo "" >> changelog.md
+            git log --pretty=format:"* %s (%h)" $LAST_TAG..HEAD >> changelog.md
+          else
+            echo "### Initial Release" >> changelog.md
+            echo "" >> changelog.md
+            git log --pretty=format:"* %s (%h)" >> changelog.md
+          fi
+          
+          echo "" >> changelog.md
+          echo "" >> changelog.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG:-HEAD}...${{ needs.build.outputs.version }}" >> changelog.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.build.outputs.version }}
+          name: Release ${{ needs.build.outputs.version }}
+          body_path: changelog.md
+          draft: false
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, 'alpha') || contains(github.event.inputs.version, 'beta') }}
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================
+  # Notify Job - Success notification
+  # ============================================
+  notify:
+    name: Notify Success
+    runs-on: ubuntu-latest
+    needs: [test, build, release]
+    if: always() && github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Check job status
+        run: |
+          if [ "${{ needs.build.result }}" == "success" ] && [ "${{ needs.release.result }}" == "success" ]; then
+            echo "✅ Build and Release completed successfully!"
+          else
+            echo "❌ Build or Release failed!"
+            exit 1
+          fi
